@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TopOne Care - Konseli</title>
+<!-- Reasoning & Trade-offs:
+  1. Semua kode inline agar file mandiri, bisa dijadikan PWA.
+  2. localStorage digunakan untuk menyimpan threads & messages.
+  3. Notifikasi lokal via Web Notifications API; fallback jika tidak diizinkan.
+  4. ID konseli random per sesi, anonimitas terjaga.
+  5. PWA & Service Worker dari Blob URL, cache offline-first.
+  6. Tanpa backend, sehingga data hanya tersimpan di perangkat ini.
+  7. Bisa diperluas ke backend/real-time dengan API server di masa depan.
+-->
+<style>
+:root{
+  --pink:#FF6FB5;
+  --blue:#4DA3FF;
+  --bg:#fff;
+  --text:#222;
+  --toast-bg:#333;
+  --toast-text:#fff;
+}
+body{margin:0;font-family:sans-serif;background:linear-gradient(135deg,var(--pink),var(--blue));color:var(--text);}
+header{padding:1rem;text-align:center;background:rgba(255,255,255,0.2);}
+header svg{width:60px;height:60px;}
+nav{position:fixed;bottom:0;width:100%;display:flex;justify-content:space-around;background:rgba(255,255,255,0.2);padding:.5rem 0;}
+nav button{background:none;border:none;font-size:1rem;color:#fff;cursor:pointer;}
+section{padding:1rem;margin-bottom:3rem;}
+textarea{width:100%;min-height:120px;padding:.5rem;font-size:1rem;}
+select,input,button{padding:.5rem;font-size:1rem;margin-top:.5rem;width:100%;box-sizing:border-box;}
+button{background:var(--pink);color:#fff;border:none;border-radius:5px;cursor:pointer;}
+.toast{position:fixed;bottom:4rem;left:50%;transform:translateX(-50%);background:var(--toast-bg);color:var(--toast-text);padding:.5rem 1rem;border-radius:5px;display:none;}
+.thread{background:rgba(255,255,255,0.8);padding:.5rem;margin:.5rem 0;border-radius:5px;}
+.thread-status{font-size:.8rem;color:#555;}
+</style>
+</head>
+<body>
+<header>
+  <!-- Placeholder SVG Logo -->
+  <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="#fff"/><text x="50" y="55" font-size="20" text-anchor="middle" fill="var(--pink)">TopOne</text></svg>
+  <h2 id="quote"></h2>
+</header>
+
+<section id="home">
+  <button id="startChat">Mulai Curhat/Konsul</button>
+</section>
+
+<section id="chat" style="display:none;">
+  <h3>Curhat/Konsul</h3>
+  <textarea id="messageInput" placeholder="Tulis ceritamu di sini..." minlength="10" maxlength="2000"></textarea>
+  <select id="category">
+    <option value="Pergaulan">Pergaulan</option>
+    <option value="Belajar">Belajar</option>
+    <option value="Keluarga">Keluarga</option>
+    <option value="Lainnya">Lainnya</option>
+  </select>
+  <button id="sendMessage">Kirim</button>
+  <p><a href="#" id="toHistory">Lihat Riwayat</a></p>
+</section>
+
+<section id="history" style="display:none;">
+  <h3>Riwayat Konsul</h3>
+  <div id="threadsList"></div>
+</section>
+
+<div class="toast" id="toast"></div>
+
+<nav>
+  <button data-tab="home">Beranda</button>
+  <button data-tab="chat">Konsul</button>
+  <button data-tab="history">Riwayat</button>
+</nav>
+
+<script>
+(function(){
+  // ======== Storage Module ========
+  const Storage = {
+    prefix:'toc:',
+    getThreads(){return JSON.parse(localStorage.getItem(this.prefix+'threads')||'[]');},
+    saveThreads(arr){localStorage.setItem(this.prefix+'threads',JSON.stringify(arr));},
+    getMessages(id){return JSON.parse(localStorage.getItem(this.prefix+'messages:'+id)||'[]');},
+    saveMessages(id,arr){localStorage.setItem(this.prefix+'messages:'+id,JSON.stringify(arr));}
+  };
+
+  // ======== Session & ID ========
+  let sessionId = localStorage.getItem('toc:session:konseli') || ('ksl_'+Date.now()+'_'+Math.random().toString(36).substr(2,5));
+  localStorage.setItem('toc:session:konseli',sessionId);
+
+  // ======== Motivasi ========
+  const quotes = ["Kamu tidak sendiri.","Setiap cerita itu berharga.","Pelan-pelan tidak apa-apa.","Berani meminta bantuan adalah kekuatan.","Hari ini lebih baik dari kemarin.","Senyum itu menular.","Jangan ragu untuk bertanya.","Setiap langkah berarti.","Kamu layak didengar.","Percaya prosesmu."];
+  document.getElementById('quote').textContent = quotes[Math.floor(Math.random()*quotes.length)];
+
+  // ======== Tab Navigation ========
+  const sections={home:document.getElementById('home'),chat:document.getElementById('chat'),history:document.getElementById('history')};
+  document.querySelectorAll('nav button').forEach(btn=>{
+    btn.addEventListener('click',()=>{for(s in sections) sections[s].style.display='none'; sections[btn.dataset.tab].style.display='block';});
+  });
+
+  // ======== Toast ========
+  function showToast(msg){
+    const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block';
+    setTimeout(()=>t.style.display='none',2000);
+  }
+
+  // ======== Send Message ========
+  document.getElementById('sendMessage').addEventListener('click',()=>{
+    const text=document.getElementById('messageInput').value.trim();
+    const category=document.getElementById('category').value;
+    if(text.length<10){showToast('Minimal 10 karakter');return;}
+    const threads=Storage.getThreads();
+    const id='thr_'+Date.now()+'_'+Math.random().toString(36).substr(2,4);
+    const now=Date.now();
+    threads.push({id,status:'Terkirim',category,createdAt:now,updatedAt:now});
+    Storage.saveThreads(threads);
+    Storage.saveMessages(id,[{role:'konseli',text,ts:now}]);
+    document.getElementById('messageInput').value='';
+    showToast('Pesan terkirim!');
+    renderThreads();
+  });
+
+  // ======== Render Threads ========
+  function renderThreads(){
+    const container=document.getElementById('threadsList'); container.innerHTML='';
+    const threads=Storage.getThreads().sort((a,b)=>b.createdAt-a.createdAt);
+    threads.forEach(th=>{
+      const msgs=Storage.getMessages(th.id);
+      const div=document.createElement('div'); div.className='thread';
+      div.innerHTML=`<strong>${th.category}</strong> - <span class="thread-status">${th.status}</span><br>${msgs[0].text.substr(0,50)}${msgs[0].text.length>50?'...':''}<br><small>${new Date(th.createdAt).toLocaleString()}</small>`;
+      if(th.status==='Dijawab'){
+        const last=msgs[msgs.length-1];
+        if(last.role==='konselor'){div.innerHTML+=`<p><strong>Balasan:</strong> ${last.text}</p>`;}
+        const btn=document.createElement('button'); btn.textContent='Tandai Selesai'; btn.onclick=()=>{threads.splice(threads.findIndex(t=>t.id===th.id),1); Storage.saveThreads(threads); renderThreads();};
+        div.appendChild(btn);
+      }
+      container.appendChild(div);
+    });
+  }
+
+  // ======== Navigate from Home ========
+  document.getElementById('startChat').addEventListener('click',()=>{sections.home.style.display='none'; sections.chat.style.display='block';});
+  document.getElementById('toHistory').addEventListener('click',()=>{sections.chat.style.display='none'; sections.history.style.display='block'; renderThreads();});
+
+  renderThreads();
+
+  // ======== Notifications ========
+  function notify(title,body){
+    if("Notification" in window){if(Notification.permission==="granted"){new Notification(title,{body});} else if(Notification.permission!=="denied"){Notification.requestPermission().then(p=>{if(p==="granted") new Notification(title,{body});});}}
+  }
+
+  // Simulasi notifikasi saat status berubah (cek interval 10 detik)
+  setInterval(()=>{
+    const threads=Storage.getThreads();
+    threads.forEach(th=>{
+      if(th.status==='Dijawab' && !th.notified){th.notified=true; showToast('Ada balasan baru!'); notify('TopOne Care','Thread dijawab konselor');}
+    });
+    Storage.saveThreads(threads);
+  },10000);
+
+  // ======== PWA ========
+  const manifest = {
+    "name":"TopOne Care Konseli",
+    "short_name":"TopOneCare",
+    "start_url":".",
+    "display":"standalone",
+    "background_color":"#fff",
+    "theme_color":"#FF6FB5",
+    "icons":[{"src":"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23FF6FB5'/><text x='50' y='55' font-size='20' text-anchor='middle' fill='white'>T</text></svg>","sizes":"100x100","type":"image/svg+xml"}]
+  };
+  const manifestBlob=new Blob([JSON.stringify(manifest)],{type:'application/json'});
+  const manifestURL=URL.createObjectURL(manifestBlob);
+  const link=document.createElement('link'); link.rel='manifest'; link.href=manifestURL; document.head.appendChild(link);
+
+  // Service Worker Inline
+  if('serviceWorker' in navigator){
+    const swCode=`
+      const CACHE_NAME='toc-cache-v1';
+      const urls=['.'];
+      self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE_NAME).then(c=>c.addAll(urls)));});
+      self.addEventListener('fetch',e=>{e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)));});
+    `;
+    const swBlob=new Blob([swCode],{type:'application/javascript'});
+    navigator.serviceWorker.register(URL.createObjectURL(swBlob));
+  }
+
+})();
+</script>
+</body>
+</html>
